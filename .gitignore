@@ -1,0 +1,13 @@
+# Ignore video folders and temp files
+Final_Render_Folder/
+videos/
+TEMP_*.mp4
+*_resized.mp4
+*.mp4
+*.mov
+
+# Ignore Mac system files
+.DS_Store
+
+# Ignore Python cache
+__pycache__/
