@@ -242,7 +242,13 @@ class VideoResizerApp(ctk.CTk):
         preview_frame = ctk.CTkFrame(settings_win, fg_color="#1e1e1e", corner_radius=10)
         preview_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
         
-        ctk.CTkLabel(preview_frame, text="Live Canvas Preview (16:9)", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
+        self.res_selector = ctk.CTkSegmentedButton(
+            preview_frame,
+            values=["1920x1080 (16:9)", "1280x720 (16:9)", "1004x720 (Custom)"],
+            command=self.update_live_preview
+        )
+        self.res_selector.set("1920x1080 (16:9)")
+        self.res_selector.pack(pady=(10, 5))
         
         legend_frame = ctk.CTkFrame(preview_frame, fg_color="transparent")
         legend_frame.pack(pady=(0, 10))
@@ -266,7 +272,14 @@ class VideoResizerApp(ctk.CTk):
         self.lbl_bot_val.configure(text=f"Scan Area (Bottom): {int(bot*100)}%")
         self.lbl_corn_val.configure(text=f"Corner Ignore Mask: {int(corn*100)}%")
 
-        w, h = 640, 360 
+        # Dynamically calculate preview dimensions based on selected tab
+        selected_res = getattr(self, 'res_selector', None)
+        res_val = selected_res.get() if selected_res else "1920"
+
+        if "1004" in res_val:
+            w, h = 502, 360 # Locks height to 360 to prevent UI clipping, shrinks width
+        else:
+            w, h = 640, 360 # Standard 16:9 for 1920x1080 and 1280x720
         
         if self.bg_path and os.path.exists(self.bg_path):
             try:
@@ -812,18 +825,20 @@ class VideoResizerApp(ctk.CTk):
         if not self.bg_path or not os.path.exists(self.bg_path):
             fallback_bg = os.path.join(self.output_video_folder, "SAFE_FALLBACK_BG.png")
             try:
-                safe_img = Image.new('RGB', (1920, 1080), color='#1e1e2f')
+                # Updated to dynamically draw the fallback image to the native resolution
+                safe_img = Image.new('RGB', (vid_w, vid_h), color='#1e1e2f')
                 safe_img.save(fallback_bg)
                 bg_input_source = fallback_bg
             except Exception:
-                bg_input_source = "color=c=black:s=1920x1080"
+                bg_input_source = f"color=c=black:s={vid_w}x{vid_h}"
 
         shrink = self.cfg["shrink"]
         enable_expr = "+".join([f"between(t,{i['start']},{i['end']})" for i in intervals])
         
+        # Updated to inject the dynamic vid_w and vid_h instead of hardcoding 1920:1080
         filter_complex = (
-            f"[1:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080[bg];"
-            f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black[orig_standard];"
+            f"[1:v]scale={vid_w}:{vid_h}:force_original_aspect_ratio=increase,crop={vid_w}:{vid_h}[bg];"
+            f"[0:v]scale={vid_w}:{vid_h}:force_original_aspect_ratio=decrease,pad={vid_w}:{vid_h}:(ow-iw)/2:(oh-ih)/2:color=black[orig_standard];"
             f"[orig_standard]split=2[orig][to_shrink];"
             f"[to_shrink]scale=iw*{shrink}:ih*{shrink}[shrunk];"
             f"[bg][shrunk]overlay=(W-w)/2:0[padded];"
