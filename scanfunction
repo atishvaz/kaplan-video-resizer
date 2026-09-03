@@ -1,0 +1,109 @@
+def scan_video(self, video_path, tile):
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened(): return None
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        bot_pct = self.cfg["bottom_pct"]
+        corn_pct = self.cfg["corner_pct"]
+        frame_interval = int(fps * self.cfg.get("CHECK_INTERVAL", 1.0))
+        
+        frame_count, current_start = 0, 0
+        raw_intervals, current_texts = [], []
+        is_overlapping = False
+
+        while cap.isOpened():
+            if getattr(self, 'cancel_flag', False):
+                cap.release()
+                return None
+                
+            ret, frame = cap.read()
+            if not ret: break
+
+            # Scan the frame once per second
+            if frame_count % frame_interval == 0:
+                if total_frames > 0:
+                    prog = 0.1 + (0.5 * (frame_count / total_frames))
+                    tile.update_tile(f"Scanning ({self.format_timestamp(frame_count/fps)})...", prog, "#3B8ED0", stage="OCR Analysis")
+
+                h, w, _ = frame.shape
+                
+                # Isolate the exact blue box based on your UI sliders
+                subtitle_zone = frame[int(h * (1 - bot_pct)):h, 0:w]
+                gray_zone = cv2.cvtColor(subtitle_zone, cv2.COLOR_BGR2GRAY)
+                mask_w = int(w * corn_pct)
+                gray_zone[:, :mask_w] = 255           
+                gray_zone[:, w - mask_w:] = 255   
+                
+                # Standard blur and threshold
+                blurred_zone = cv2.medianBlur(gray_zone, 3)
+                _, thresh_zone = cv2.threshold(blurred_zone, 150, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                
+                # Run OCR
+                ocr_data = pytesseract.image_to_data(thresh_zone, output_type=pytesseract.Output.DICT)
+                
+                valid_word_count = 0
+                n_boxes = len(ocr_data['text'])
+                
+                for idx in range(n_boxes):
+                    try:
+                        conf = float(ocr_data['conf'][idx])
+                    except ValueError:
+                        continue
+                        
+                    word = ocr_data['text'][idx].strip()
+                    word_clean = re.sub(r'[^a-zA-Z0-9]', '', word)
+                    
+                    if "kaplan" in word.lower():
+                        continue
+                        
+                    # SIMPLE RULE: Is it a real word (3+ letters) with decent confidence (>60%)?
+                    if len(word_clean) >= 3 and conf >= 60.0:
+                        valid_word_count += 1
+                        if word not in current_texts: 
+                            current_texts.append(word)
+
+                text_present = (valid_word_count > 0)
+
+                # Track the exact start and end times of the text
+                if text_present and not is_overlapping:
+                    is_overlapping = True
+                    current_start = frame_count / fps
+                elif not text_present and is_overlapping:
+                    is_overlapping = False
+                    raw_intervals.append({'start': current_start, 'end': frame_count / fps, 'texts': current_texts})
+                    current_texts = [] 
+
+            frame_count += 1
+
+        if is_overlapping: 
+            raw_intervals.append({'start': current_start, 'end': (frame_count / fps), 'texts': current_texts})
+        cap.release()
+        
+        if not raw_intervals: return []
+
+        # ==========================================
+        # 15-SECOND BRIDGE LOGIC
+        # ==========================================
+        raw_intervals.sort(key=lambda x: x['start'])
+        smoothed_intervals = []
+        
+        current_interval = raw_intervals[0]
+        current_interval['start'] = max(0, current_interval['start'] - self.cfg["time_buffer_start"])
+
+        for next_interval in raw_intervals[1:]:
+            next_start_buffered = max(0, next_interval['start'] - self.cfg["time_buffer_start"])
+            gap = next_start_buffered - current_interval['end']
+            
+            # If the gap between text overlaps is 15 seconds or less, combine them into one long shrink!
+            if gap <= 15.0:
+                current_interval['end'] = next_interval['end']
+                current_interval['texts'] = list(set(current_interval['texts'] + next_interval['texts']))
+            else:
+                smoothed_intervals.append(current_interval)
+                current_interval = next_interval
+                current_interval['start'] = next_start_buffered
+
+        smoothed_intervals.append(current_interval)
+        return smoothed_intervals

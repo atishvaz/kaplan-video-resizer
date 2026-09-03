@@ -11,3 +11,10 @@ TEMP_*.mp4
 
 # Ignore Python cache
 __pycache__/
+
+build/
+dist/
+*.dmg
+*.pkg
+*.app
+*.pyz

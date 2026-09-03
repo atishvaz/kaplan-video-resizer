@@ -10,7 +10,6 @@ import openpyxl
 import time
 import shutil 
 import sys
-import datetime
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 
 # ==========================================
@@ -170,18 +169,8 @@ class VideoResizerApp(ctk.CTk):
         self.main_frame.grid_rowconfigure(1, weight=1) 
         self.main_frame.grid_columnconfigure(0, weight=1)
 
-        # Header Frame to hold both the Title and the Counter
-        self.queue_header_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.queue_header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        self.queue_header_frame.grid_columnconfigure(0, weight=1)
-        self.queue_header_frame.grid_columnconfigure(1, weight=1)
-
-        self.queue_label = ctk.CTkLabel(self.queue_header_frame, text="Batch Queue (Sequential)", font=ctk.CTkFont(size=20, weight="bold"))
-        self.queue_label.grid(row=0, column=0, sticky="w")
-
-        # New Counter Label (Size 11 to match 'Resized: Yes', pushed to extreme right)
-        self.queue_counter_label = ctk.CTkLabel(self.queue_header_frame, text="", font=ctk.CTkFont(size=11), text_color="#a3a3a3")
-        self.queue_counter_label.grid(row=0, column=1, sticky="e", padx=(0, 5))
+        self.queue_label = ctk.CTkLabel(self.main_frame, text="Batch Queue (Sequential)", font=ctk.CTkFont(size=20, weight="bold"))
+        self.queue_label.grid(row=0, column=0, sticky="w", pady=(0, 10))
 
         self.queue_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color="#1e1e1e", corner_radius=10)
         self.queue_frame.grid(row=1, column=0, sticky="nsew")
@@ -382,67 +371,33 @@ class VideoResizerApp(ctk.CTk):
         ctk.CTkButton(btn_frame, text="Stop Here", fg_color="#ff4c4c", hover_color="#cc0000", command=on_no, width=120).pack(side="right", padx=10)
         popup.protocol("WM_DELETE_WINDOW", on_no)
 
-
-    def update_queue_label(self, completed, total):
-        if total > 0:
-            self.queue_counter_label.configure(text=f"{completed} / {total} Completed")
-        else:
-            self.queue_counter_label.configure(text="")
-
-    def show_error_popup(self, message):
-        popup = ctk.CTkToplevel(self)
-        popup.title("Error: File Locked")
-        popup.geometry("380x150")
-        popup.attributes('-topmost', True)
-        popup.grab_set()
-        ctk.CTkLabel(popup, text=message, wraplength=340, font=ctk.CTkFont(size=14)).pack(pady=30)
-        ctk.CTkButton(popup, text="OK", command=popup.destroy, width=120).pack()
-
     def setup_excel_headers(self, sheet, wb):
-        # Requested exact order
-        headers_to_add = [
-            "Original Resolution", "Audio Status", "QA Status", 
-            "Total Resizes", "Elapsed Time", "Original File Size", 
-            "Compressed File Size", "Compression Used", 
-            "Overlap Timestamps", "Obscured Text"
-        ]
-        
+        headers_to_add = ["QA Status", "Original Resolution", "Audio Status", "Overlap Timestamps", "Obscured Text"]
         max_col = 1
         while sheet.cell(row=1, column=max_col).value is not None: max_col += 1
 
-        self.col_indices = {}
-        # Map all existing headers (including "Duration" for the validation check)
+        existing_headers = {}
         for col in range(1, max_col):
-            val = str(sheet.cell(row=1, column=col).value).strip()
-            self.col_indices[val] = col
+            val = sheet.cell(row=1, column=col).value
+            if val in headers_to_add: existing_headers[val] = col
 
         next_blank = max_col
         needs_save = False
         for header in headers_to_add:
-            if header not in self.col_indices:
+            if header in existing_headers:
+                self.col_indices[header] = existing_headers[header]
+            else:
                 sheet.cell(row=1, column=next_blank, value=header)
                 self.col_indices[header] = next_blank
                 next_blank += 1
                 needs_save = True
         if needs_save: wb.save(self.excel_path)
 
-
     def run_master_controller(self, batch_limit):
         try:
             if os.path.basename(self.excel_path).startswith("~$"):
+                print("Error: Linked file is an Excel temporary lock file.")
                 return
-
-            try:
-                test_wb = openpyxl.load_workbook(self.excel_path)
-                test_wb.save(self.excel_path)
-            except PermissionError:
-                self.after(0, lambda: self.show_error_popup("Your Excel file is currently open. Please close Microsoft Excel and try again."))
-                return
-            except Exception:
-                return
-
-            if not os.path.exists(self.output_video_folder):
-                os.makedirs(self.output_video_folder, exist_ok=True)
 
             wb = openpyxl.load_workbook(self.excel_path)
             sheet = wb.active
@@ -456,26 +411,15 @@ class VideoResizerApp(ctk.CTk):
                 if str(raw_title).startswith("~$") or str(raw_title).startswith("."):
                     continue
 
-                current_status = str(sheet.cell(row=row, column=self.col_indices.get("QA Status", 0)).value or "")
-                if "Fixed" in current_status or current_status == "Clear" or "mismatch" in current_status: 
+                current_status = str(sheet.cell(row=row, column=self.col_indices["QA Status"]).value or "")
+                if "Fixed" in current_status or current_status == "Clear": 
                     continue 
-                
-                # Fetch expected duration if the column exists
-                expected_dur = None
-                if "Duration" in self.col_indices:
-                    expected_dur = sheet.cell(row=row, column=self.col_indices["Duration"]).value
                     
-                all_pending_jobs.append({"row": row, "title": raw_title, "expected_duration": expected_dur})
+                all_pending_jobs.append({"row": row, "title": raw_title})
 
-            total_jobs = len(all_pending_jobs)
-            if total_jobs == 0: 
-                self.after(0, lambda: self.update_queue_label(0, 0))
-                return
+            if not all_pending_jobs: return
 
-            completed_jobs = 0
-            self.after(0, lambda: self.update_queue_label(completed_jobs, total_jobs))
-
-            for i in range(0, total_jobs, batch_limit):
+            for i in range(0, len(all_pending_jobs), batch_limit):
                 if self.cancel_flag: break
 
                 current_batch = all_pending_jobs[i : i + batch_limit]
@@ -490,18 +434,16 @@ class VideoResizerApp(ctk.CTk):
                 for job in current_batch:
                     if self.cancel_flag: break
                     self.process_single_video(job, job_tiles[job['row']])
-                    completed_jobs += 1
-                    self.after(0, lambda c=completed_jobs, t=total_jobs: self.update_queue_label(c, t))
                 
                 if self.cancel_flag: break
 
-                if i + batch_limit < total_jobs:
+                if i + batch_limit < len(all_pending_jobs):
                     if not self.ask_to_continue(): break
 
         except Exception as e:
             print(f"Master Error: {str(e)}")
         finally:
-            self.btn_run.configure(state="normal", text="▶ START BATCH", fg_color="#28a745", hover_color="#218838")
+            self.btn_run.configure(state="normal", text="▶ START BATCH", fg_color="#28a745", hover_color="#218838", command=self.start_pipeline_thread)
             self.btn_select_excel.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
             self.btn_select_folder.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
             self.btn_select_bg.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
@@ -516,62 +458,28 @@ class VideoResizerApp(ctk.CTk):
 
         row = job['row']
         raw_title = job['title']
-        expected_duration_str = job.get('expected_duration')
         
         tile.start_timer()
         tile.update_tile("Locating file...", 0.05, "#ffcc00", stage="Initialization")
         video_path = self.find_video_file(raw_title)
 
-        # UPDATED: Returns a native time object so Excel can calculate/sum it
-        def get_elapsed():
-            if not tile.start_time: return datetime.time(0, 0, 0)
-            elapsed_sec = int(time.time() - tile.start_time)
-            hours, remainder = divmod(elapsed_sec, 3600)
-            mins, secs = divmod(remainder, 60)
-            return datetime.time(hour=hours, minute=mins, second=secs)
-
-        def get_mb(path):
-            return f"{os.path.getsize(path) / (1024*1024):.1f} MB" if os.path.exists(path) else "N/A"
-
         if not video_path:
-            self.save_to_excel(row, qa_status="File Not Found", elapsed_time=get_elapsed(), total_resizes=0)
+            self.save_to_excel(row, qa_status="File Not Found", resolution="N/A")
             tile.stop_timer()
             tile.update_tile("File Not Found", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
             return
 
-        # Fetch Video Metadata
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
         frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
         vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         resolution_str = f"{vid_w}x{vid_h}"
-        actual_duration_sec = (frames / fps) if fps > 0 else 0
+        
+        if fps > 0 and frames > 0:
+            tile.set_duration(frames / fps)
         cap.release()
 
-        # Duration Match Verification (2-second tolerance)
-        if expected_duration_str:
-            try:
-                parts = str(expected_duration_str).split(":")
-                if len(parts) == 2:
-                    expected_sec = int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 3:
-                    expected_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                else:
-                    expected_sec = actual_duration_sec
-                
-                if abs(expected_sec - actual_duration_sec) > 2.0:
-                    self.save_to_excel(row, qa_status="Duration mismatch / Wrong video", resolution=resolution_str, elapsed_time=get_elapsed(), total_resizes=0)
-                    tile.stop_timer()
-                    tile.update_tile("Wrong Video / Duration", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
-                    return
-            except Exception:
-                pass # Proceed safely if Excel duration format is unreadable
-
-        if fps > 0 and frames > 0:
-            tile.set_duration(actual_duration_sec)
-
-        orig_file_size = get_mb(video_path)
         video_filename = os.path.basename(video_path)
         tile.update_tile("Checking Audio...", 0.1, "#ffcc00", stage="Audio Check")
         audio_status = self.check_audio(video_path)
@@ -584,65 +492,45 @@ class VideoResizerApp(ctk.CTk):
             return
 
         if intervals is None:
-            self.save_to_excel(row, qa_status="Error Reading Video", resolution=resolution_str, elapsed_time=get_elapsed(), total_resizes=0)
+            self.save_to_excel(row, qa_status="Error Reading Video", resolution=resolution_str)
             tile.stop_timer()
             tile.update_tile("Read Error", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
             return
         elif len(intervals) == 0:
             tile.update_tile("Copying Clean Video...", 0.9, "#3B8ED0", stage="File Transfer")
-            out_path = os.path.join(self.output_video_folder, video_filename)
-            shutil.copy2(video_path, out_path)
-            self.save_to_excel(row, qa_status="Clear", resolution=resolution_str, audio_status=audio_status, timestamps="None", text_data="None", elapsed_time=get_elapsed(), total_resizes=0, orig_size=orig_file_size, comp_size=get_mb(out_path), comp_used="Direct Copy")
+            shutil.copy2(video_path, os.path.join(self.output_video_folder, video_filename))
+            self.save_to_excel(row, qa_status="Clear", resolution=resolution_str, audio_status=audio_status, timestamps="None", text_data="None")
             tile.stop_timer()
             tile.update_tile("Clear & Copied", 1.0, color="#28a745", stage="Complete", resized_status="No (Original Copied)")
             return
             
         all_timestamps = ", ".join([f"{self.format_timestamp(i['start'])}-{self.format_timestamp(i['end'])}" for i in intervals])
         all_texts = " | ".join([text for i in intervals for text in i['texts']])
-        num_resizes = len(intervals)
 
         success = self.render_and_compress(video_path, intervals, tile)
         
-        base_name, ext = os.path.splitext(video_filename)
-        final_output_path = os.path.join(self.output_video_folder, f"{base_name}_resized{ext}")
-        comp_file_size = get_mb(final_output_path)
-        
-        is_compressed = self.compress_var.get() == 1
-        compression_used = f"{self.cfg['preset']}_{self.cfg['crf']}" if is_compressed else "Hardware Render (Fast)"
-
         if success:
+            is_compressed = self.compress_var.get() == 1
             success_msg = "Fixed & Compressed" if is_compressed else "Fixed without compression"
-            self.save_to_excel(row, qa_status=success_msg, resolution=resolution_str, audio_status=audio_status, timestamps=all_timestamps, text_data=all_texts, elapsed_time=get_elapsed(), total_resizes=num_resizes, orig_size=orig_file_size, comp_size=comp_file_size, comp_used=compression_used)
+            self.save_to_excel(row, qa_status=success_msg, resolution=resolution_str, audio_status=audio_status, timestamps=all_timestamps, text_data=all_texts)
             tile.stop_timer()
             tile.update_tile(success_msg, 1.0, color="#28a745", stage="Complete", resized_status="Yes")
         else:
-            self.save_to_excel(row, qa_status="Render Error", resolution=resolution_str, audio_status=audio_status, elapsed_time=get_elapsed(), total_resizes=num_resizes, orig_size=orig_file_size)
+            self.save_to_excel(row, qa_status="Render Error", resolution=resolution_str, audio_status=audio_status)
             tile.stop_timer()
             tile.update_tile("Render Failed", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
 
-    def save_to_excel(self, row, qa_status, resolution="N/A", audio_status="N/A", timestamps=None, text_data=None, elapsed_time=None, total_resizes=None, orig_size=None, comp_size=None, comp_used=None):
+    def save_to_excel(self, row, qa_status, resolution="N/A", audio_status="N/A", timestamps=None, text_data=None):
         try:
             wb = openpyxl.load_workbook(self.excel_path)
             sheet = wb.active
-            
-            def write_if_exists(header, value):
-                if header in self.col_indices and value is not None:
-                    sheet.cell(row=row, column=self.col_indices[header], value=value)
-                    
-            write_if_exists("QA Status", qa_status)
-            write_if_exists("Original Resolution", resolution)
-            write_if_exists("Audio Status", audio_status)
-            write_if_exists("Overlap Timestamps", timestamps)
-            write_if_exists("Obscured Text", text_data)
-            write_if_exists("Elapsed Time", elapsed_time)
-            write_if_exists("Total Resizes", total_resizes)
-            write_if_exists("Original File Size", orig_size)
-            write_if_exists("Compressed File Size", comp_size)
-            write_if_exists("Compression Used", comp_used)
-            
+            sheet.cell(row=row, column=self.col_indices["QA Status"], value=qa_status)
+            sheet.cell(row=row, column=self.col_indices["Original Resolution"], value=resolution)
+            sheet.cell(row=row, column=self.col_indices["Audio Status"], value=audio_status)
+            if timestamps is not None: sheet.cell(row=row, column=self.col_indices["Overlap Timestamps"], value=timestamps)
+            if text_data is not None: sheet.cell(row=row, column=self.col_indices["Obscured Text"], value=text_data)
             wb.save(self.excel_path)
-        except Exception as e: 
-            print(f"Excel Save Error: {e}")
+        except Exception as e: print(f"Excel Save Error: {e}")
 
     def normalize_string(self, s):
         if not s: return ""
