@@ -117,8 +117,8 @@ class VideoResizerApp(ctk.CTk):
             "shrink": 0.87,
             "bottom_pct": 0.13,
             "corner_pct": 0.09,
-            "crf": 28,
-            "preset": "slower",
+            "crf": 26,
+            "preset": "superfast",
             "time_buffer_start": 0.5,
             "max_bridge_gap": 15.0  # UPDATED: Holds shrink for 15 seconds
         }
@@ -203,7 +203,7 @@ class VideoResizerApp(ctk.CTk):
         ctrl_frame = ctk.CTkFrame(settings_win, fg_color="transparent")
         ctrl_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
         
-        ctk.CTkLabel(ctrl_frame, text="Layout Controls", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", pady=(0, 15))
+        ctk.CTkLabel(ctrl_frame, text="Layout Controls", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", pady=(0, 15))
 
         self.lbl_shrink_val = ctk.CTkLabel(ctrl_frame, text=f"Shrink Factor: {int(self.cfg['shrink']*100)}%")
         self.lbl_shrink_val.pack(anchor="w")
@@ -223,7 +223,7 @@ class VideoResizerApp(ctk.CTk):
         self.slider_corn.set(self.cfg['corner_pct'])
         self.slider_corn.pack(fill="x", pady=(0, 20))
 
-        ctk.CTkLabel(ctrl_frame, text="Compression Settings", font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", pady=(15, 15))
+        ctk.CTkLabel(ctrl_frame, text="Compression Settings", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", pady=(15, 15))
         
         self.lbl_crf_val = ctk.CTkLabel(ctrl_frame, text=f"CRF (Lower = Better Qty): {self.cfg['crf']}")
         self.lbl_crf_val.pack(anchor="w")
@@ -442,6 +442,9 @@ class VideoResizerApp(ctk.CTk):
 
     def run_master_controller(self, batch_limit):
         try:
+
+            self.cancel_flag = False
+
             if os.path.basename(self.excel_path).startswith("~$"):
                 return
 
@@ -514,7 +517,14 @@ class VideoResizerApp(ctk.CTk):
         except Exception as e:
             print(f"Master Error: {str(e)}")
         finally:
-            self.btn_run.configure(state="normal", text="▶ START BATCH", fg_color="#28a745", hover_color="#218838")
+            # Reattach the correct start_pipeline_thread command to the button
+            self.btn_run.configure(
+                state="normal", 
+                text="▶ START BATCH", 
+                fg_color="#28a745", 
+                hover_color="#218838",
+                command=self.start_pipeline_thread # <--- This is the crucial fix
+            )
             self.btn_select_excel.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
             self.btn_select_folder.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
             self.btn_select_bg.configure(state="normal", fg_color=["#3B8ED0", "#1F6AA5"])
@@ -883,6 +893,13 @@ class VideoResizerApp(ctk.CTk):
             return True
         except subprocess.CalledProcessError as ffmpeg_error:
             print(f"FFmpeg Rendering Crash Error: {ffmpeg_error.stderr.decode('utf-8', errors='ignore')}")
+            return False
+        except FileNotFoundError:
+            print("CRITICAL: FFmpeg is not installed on this system.")
+            tile.update_tile("Missing FFmpeg (Install via Brew)", 1.0, color="#ff4c4c", stage="Halted")
+            return False
+        except Exception as e:
+            print(f"General Render Error: {str(e)}")
             return False
 
 if __name__ == "__main__":
