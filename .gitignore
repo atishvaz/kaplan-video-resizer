@@ -18,3 +18,13 @@ dist/
 *.pkg
 *.app
 *.pyz
+build/
+dist/
+*.dmg
+*.spec
+
+build/
+dist/
+*.dmg
+*.spec
+dmg_staging/

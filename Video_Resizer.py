@@ -12,20 +12,61 @@ import shutil
 import sys
 import datetime
 from PIL import Image, ImageDraw, ImageOps, ImageTk
+import tkinter.messagebox as messagebox
 
 # ==========================================
-# PORTABLE COMPILATION PATH ENGINE
+# HYBRID PATH ENGINE & AUTO-INSTALLER
 # ==========================================
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    bundle_dir = sys._MEIPASS
-    possible_tesseract_path = os.path.join(bundle_dir, "tesseract")
-    if not os.path.exists(possible_tesseract_path):
-        possible_tesseract_path = os.path.join(bundle_dir, "Contents", "Resources", "tesseract")
+def get_tool_path(tool_name):
+    # 1. Check inside the bundled app (Tier 1)
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        bundled_path = os.path.join(sys._MEIPASS, tool_name)
+        if os.path.exists(bundled_path):
+            return bundled_path
+            
+    # 2. Check the system path (Tier 2)
+    try:
+        system_path = subprocess.check_output(["which", tool_name], text=True).strip()
+        if system_path:
+            return system_path
+    except subprocess.CalledProcessError:
+        pass
         
-    pytesseract.pytesseract.tesseract_cmd = possible_tesseract_path
-    os.environ["TESSDATA_PREFIX"] = os.path.join(bundle_dir, "tessdata")
-else:
-    pytesseract.pytesseract.tesseract_cmd = r'/opt/homebrew/bin/tesseract'
+    return None
+
+ffmpeg_cmd = get_tool_path("ffmpeg")
+ffprobe_cmd = get_tool_path("ffprobe")
+tesseract_cmd = get_tool_path("tesseract")
+
+if tesseract_cmd:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+    
+    # Force the environment variable whenever running as a compiled app
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        tessdata_path = os.path.join(sys._MEIPASS, "tessdata")
+        os.environ["TESSDATA_PREFIX"] = tessdata_path
+
+def trigger_auto_installer(app_window):
+    # 3. Auto-Installer UI (Tier 3)
+    msg = "Essential media engines (FFmpeg or Tesseract) are missing from this Mac.\n\nWould you like Video Resizer to automatically install them now?"
+    if messagebox.askyesno("Missing Dependencies", msg):
+        app_window.btn_run.configure(state="disabled", text="INSTALLING ENGINES...")
+        
+        def run_brew_install():
+            try:
+                subprocess.run(["brew", "install", "ffmpeg", "tesseract"], check=True)
+                messagebox.showinfo("Success", "Engines installed! Please restart the app.")
+                sys.exit()
+            except FileNotFoundError:
+                messagebox.showerror("Error", "Homebrew is not installed. Please install Homebrew first.")
+                app_window.btn_run.configure(state="normal", text="▶ START BATCH")
+            except subprocess.CalledProcessError:
+                messagebox.showerror("Error", "Installation failed. Please check your internet connection.")
+                app_window.btn_run.configure(state="normal", text="▶ START BATCH")
+                
+        threading.Thread(target=run_brew_install, daemon=True).start()
+        return True
+    return False
 
 # ==========================================
 # UI THEME SETTINGS
@@ -342,6 +383,14 @@ class VideoResizerApp(ctk.CTk):
 
     def start_pipeline_thread(self):
         if not self.excel_path or not self.video_folder or not self.bg_path: return
+
+        # Check if tools are missing and trigger the installer
+        if not ffmpeg_cmd or not tesseract_cmd:
+            if trigger_auto_installer(self):
+                return # Stop the batch from starting while installing
+            else:
+                return # User clicked no, cancel the start
+            
         try:
             batch_limit = int(self.entry_limit.get())
             if batch_limit <= 0: raise ValueError
@@ -704,6 +753,9 @@ class VideoResizerApp(ctk.CTk):
         raw_intervals, current_texts = [], []
         is_overlapping = False
 
+        # NEW: Force the path into PyTesseract's config arguments
+        tess_config = f'--tessdata-dir "{os.environ.get("TESSDATA_PREFIX", "")}"' if getattr(sys, 'frozen', False) else ""
+
         while cap.isOpened():
             if getattr(self, 'cancel_flag', False):
                 cap.release()
@@ -732,7 +784,7 @@ class VideoResizerApp(ctk.CTk):
                 _, thresh_zone = cv2.threshold(blurred_zone, 150, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
                 
                 # Run OCR
-                ocr_data = pytesseract.image_to_data(thresh_zone, output_type=pytesseract.Output.DICT)
+                ocr_data = pytesseract.image_to_data(thresh_zone, output_type=pytesseract.Output.DICT, config=tess_config)
                 
                 valid_word_count = 0
                 n_boxes = len(ocr_data['text'])
@@ -863,7 +915,7 @@ class VideoResizerApp(ctk.CTk):
                 
                 bg_args = ["-i", bg_input_source] if "color=" not in bg_input_source else ["-f", "lavfi", "-i", bg_input_source]
                 
-                cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", "1"] + bg_args + [
+                cmd = [ffmpeg_cmd, "-y", "-i", input_path, "-loop", "1", "-t", "1"] + bg_args + [
                     "-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?",
                     "-c:v", "h264_videotoolbox", "-b:v", "4M", "-c:a", "aac", rendered_temp
                 ]
@@ -873,7 +925,7 @@ class VideoResizerApp(ctk.CTk):
 
                 tile.update_tile("Crunching file size...", 0.85, "#a855f7", stage="Software Compression")
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", rendered_temp, "-c:v", "libx264", 
+                    ffmpeg_cmd, "-y", "-i", rendered_temp, "-c:v", "libx264", 
                     "-crf", str(self.cfg["crf"]), 
                     "-preset", self.cfg["preset"], 
                     "-c:a", "copy", final_output
@@ -884,7 +936,7 @@ class VideoResizerApp(ctk.CTk):
                 tile.update_tile("Fast Hardware Render...", 0.75, "#a855f7", stage="Fast Render")
                 bg_args = ["-i", bg_input_source] if "color=" not in bg_input_source else ["-f", "lavfi", "-i", bg_input_source]
                 
-                cmd = ["ffmpeg", "-y", "-i", input_path, "-loop", "1", "-t", "1"] + bg_args + [
+                cmd = [ffmpeg_cmd, "-y", "-i", input_path, "-loop", "1", "-t", "1"] + bg_args + [
                     "-filter_complex", filter_complex, "-map", "[v]", "-map", "0:a?",
                     "-c:v", "h264_videotoolbox", "-b:v", "4M", "-c:a", "aac", final_output
                 ]

@@ -4,8 +4,8 @@
 a = Analysis(
     ['Video_Resizer.py'],
     pathex=[],
-    binaries=[],
-    datas=[('tesseract', '.'), ('tessdata', 'tessdata')],
+    binaries=[('ffmpeg', '.'), ('ffprobe', '.'), ('/opt/homebrew/bin/tesseract', '.')],
+    datas=[('app_icon.png', '.'), ('tessdata', 'tessdata')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -32,7 +32,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['app_icon.png'],
 )
 coll = COLLECT(
     exe,
@@ -46,6 +45,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Video Resizer.app',
-    icon='app_icon.png',
+    icon=None,
     bundle_identifier=None,
 )
