@@ -581,6 +581,7 @@ class VideoResizerApp(ctk.CTk):
             self.switch_compress.configure(state="normal")
             self.btn_settings.configure(state="normal")
 
+
     def process_single_video(self, job, tile):
         if self.cancel_flag: 
             tile.update_tile("Cancelled", 1.0, color="#ff4c4c", stage="Aborted", resized_status="N/A")
