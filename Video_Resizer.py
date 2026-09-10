@@ -14,12 +14,19 @@ import datetime
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 import tkinter.messagebox as messagebox
 
+
+def get_bin_path(filename):
+    """Resolves the absolute path to bundled binaries in PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, filename)
+    return os.path.join(os.path.abspath("."), filename)
+
 # ==========================================
 # HYBRID PATH ENGINE & AUTO-INSTALLER
 # ==========================================
 def get_tool_path(tool_name):
     # 1. Check inside the bundled app (Tier 1)
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    if hasattr(sys, '_MEIPASS'):
         bundled_path = os.path.join(sys._MEIPASS, tool_name)
         if os.path.exists(bundled_path):
             return bundled_path
@@ -40,11 +47,11 @@ tesseract_cmd = get_tool_path("tesseract")
 
 if tesseract_cmd:
     pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-    
-    # Force the environment variable whenever running as a compiled app
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        tessdata_path = os.path.join(sys._MEIPASS, "tessdata")
-        os.environ["TESSDATA_PREFIX"] = tessdata_path
+
+# Force PyTesseract to find its data folder when packaged
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    tessdata_path = os.path.join(sys._MEIPASS, "tessdata")
+    os.environ["TESSDATA_PREFIX"] = tessdata_path
 
 def trigger_auto_installer(app_window):
     # 3. Auto-Installer UI (Tier 3)
@@ -162,7 +169,7 @@ class VideoResizerApp(ctk.CTk):
             "preset": "superfast",
             "time_buffer_start": 0.5,
             "max_bridge_gap": 15.0,
-            "tess_conf": 65.0       # Updated to 65%
+            "tess_conf": 62.0       # Updated to 62%
         }
 
         # --- GRID LAYOUT ---
@@ -746,9 +753,12 @@ class VideoResizerApp(ctk.CTk):
 
     def check_audio(self, video_path):
         try:
-            cmd = ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path]
+            # Updated to use the dynamic ffprobe_cmd variable
+            cmd = [ffprobe_cmd, "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path]
             return "Has Audio" if "audio" in subprocess.check_output(cmd, text=True).strip() else "No Audio"
-        except Exception: return "Audio Check Error"
+        except Exception as e: 
+            print(f"Audio check failed: {e}")
+            return "Audio Check Error"
 
     def format_timestamp(self, seconds):
         mins, secs = divmod(int(seconds), 60)
@@ -828,7 +838,7 @@ class VideoResizerApp(ctk.CTk):
                     word_clean = re.sub(r'[^a-zA-Z0-9]', '', word)
                     
                     # Ignore standard copyright watermark words
-                    ignore_list = ["kaplan", "nclex", "prep", "reserved", "rights", "©", "nursing", "NURSINC"]
+                    ignore_list = ["kaplan", "nclex", "prep", "reserved", "rights", "©", "nursing", "NURSINC", "KAP!", "KAPL", "Kap!", "Kapla", "KAPLA"]
                     if any(bad_word in word.lower() for bad_word in ignore_list):
                         continue
                         
