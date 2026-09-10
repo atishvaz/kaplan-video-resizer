@@ -156,12 +156,13 @@ class VideoResizerApp(ctk.CTk):
         # ==========================================
         self.cfg = {
             "shrink": 0.87,
-            "bottom_pct": 0.13,
-            "corner_pct": 0.09,
+            "bottom_pct": 0.19,     # Updated to 19%
+            "corner_pct": 0.05,     # Updated to 5%
             "crf": 26,
             "preset": "superfast",
             "time_buffer_start": 0.5,
-            "max_bridge_gap": 15.0  # UPDATED: Holds shrink for 15 seconds
+            "max_bridge_gap": 15.0,
+            "tess_conf": 65.0       # Updated to 65%
         }
 
         # --- GRID LAYOUT ---
@@ -233,7 +234,7 @@ class VideoResizerApp(ctk.CTk):
     def open_settings_window(self):
         settings_win = ctk.CTkToplevel(self)
         settings_win.title("Settings & Live Preview")
-        settings_win.geometry("900x550")
+        settings_win.geometry("900x700")
         settings_win.attributes('-topmost', True)
         settings_win.grab_set() 
 
@@ -276,6 +277,14 @@ class VideoResizerApp(ctk.CTk):
         self.combo_preset = ctk.CTkComboBox(ctrl_frame, values=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"])
         self.combo_preset.set(self.cfg['preset'])
         self.combo_preset.pack(fill="x", pady=(0, 20))
+
+        ctk.CTkLabel(ctrl_frame, text="Sensitivity", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", pady=(15, 15))
+        
+        self.lbl_conf_val = ctk.CTkLabel(ctrl_frame, text=f"OCR Minimum Confidence: {int(self.cfg.get('tess_conf', 60))}%")
+        self.lbl_conf_val.pack(anchor="w")
+        self.slider_conf = ctk.CTkSlider(ctrl_frame, from_=10, to=100, number_of_steps=90, command=lambda v: self.lbl_conf_val.configure(text=f"OCR Minimum Confidence: {int(v)}%"))
+        self.slider_conf.set(self.cfg.get('tess_conf', 60)) 
+        self.slider_conf.pack(fill="x", pady=(0, 20))
 
         btn_save = ctk.CTkButton(ctrl_frame, text="Save Settings", fg_color="#28a745", hover_color="#218838", command=lambda: self.save_settings(settings_win))
         btn_save.pack(fill="x", side="bottom", pady=10)
@@ -357,6 +366,7 @@ class VideoResizerApp(ctk.CTk):
         self.cfg["corner_pct"] = self.slider_corn.get()
         self.cfg["crf"] = int(self.slider_crf.get())
         self.cfg["preset"] = self.combo_preset.get()
+        self.cfg["tess_conf"] = float(self.slider_conf.get())
         win.destroy()
 
     # ==========================================
@@ -671,7 +681,12 @@ class VideoResizerApp(ctk.CTk):
             return
             
         all_timestamps = ", ".join([f"{self.format_timestamp(i['start'])}-{self.format_timestamp(i['end'])}" for i in intervals])
-        all_texts = " | ".join([text for i in intervals for text in i['texts']])
+        
+        # NEW: Binds the detected words directly to their specific timestamp block
+        all_texts = " | ".join([
+            f"[{self.format_timestamp(i['start'])}-{self.format_timestamp(i['end'])}]: {', '.join(i['texts'])}" 
+            for i in intervals
+        ])
         num_resizes = len(intervals)
 
         success = self.render_and_compress(video_path, intervals, tile)
@@ -780,6 +795,19 @@ class VideoResizerApp(ctk.CTk):
                 gray_zone[:, :mask_w] = 255           
                 gray_zone[:, w - mask_w:] = 255   
                 
+                # NEW: Tiered Dynamic Upscaling to normalize text size across all resolutions
+                if h <= 360:
+                    scale = 3.5  # Boosts 270p/360p heavily
+                elif h <= 540:
+                    scale = 2.5  # Boosts 480p/540p moderately
+                elif h <= 720:
+                    scale = 1.5  # Gives 720p a slight bump for better accuracy
+                else:
+                    scale = 1.0  # Leaves 1080p+ alone
+                
+                if scale > 1.0:
+                    gray_zone = cv2.resize(gray_zone, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                
                 # Standard blur and threshold
                 blurred_zone = cv2.medianBlur(gray_zone, 3)
                 _, thresh_zone = cv2.threshold(blurred_zone, 150, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
@@ -799,11 +827,13 @@ class VideoResizerApp(ctk.CTk):
                     word = ocr_data['text'][idx].strip()
                     word_clean = re.sub(r'[^a-zA-Z0-9]', '', word)
                     
-                    if "kaplan" in word.lower():
+                    # Ignore standard copyright watermark words
+                    ignore_list = ["kaplan", "nclex", "prep", "reserved", "rights", "©", "nursing", "NURSINC"]
+                    if any(bad_word in word.lower() for bad_word in ignore_list):
                         continue
                         
-                    # SIMPLE RULE: Is it a real word (3+ letters) with decent confidence (>60%)?
-                    if len(word_clean) >= 3 and conf >= 60.0:
+                    # SIMPLE RULE: Is it a real word (3+ letters) with dynamic confidence?
+                    if len(word_clean) >= 3 and conf >= self.cfg.get("tess_conf", 60.0):
                         valid_word_count += 1
                         if word not in current_texts: 
                             current_texts.append(word)
