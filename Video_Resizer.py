@@ -610,9 +610,8 @@ class VideoResizerApp(ctk.CTk):
         
         tile.start_timer()
         tile.update_tile("Locating file...", 0.05, "#ffcc00", stage="Initialization")
-        video_path = self.find_video_file(raw_title)
+        candidate_paths = self.find_all_video_matches(raw_title)
 
-        # UPDATED: Returns a native time object so Excel can calculate/sum it
         def get_elapsed():
             if not tile.start_time: return datetime.time(0, 0, 0)
             elapsed_sec = int(time.time() - tile.start_time)
@@ -623,43 +622,54 @@ class VideoResizerApp(ctk.CTk):
         def get_mb(path):
             return f"{os.path.getsize(path) / (1024*1024):.1f} MB" if os.path.exists(path) else "N/A"
 
-        if not video_path:
+        if not candidate_paths:
             self.save_to_excel(row, qa_status="File Not Found", elapsed_time=get_elapsed(), total_resizes=0)
             tile.stop_timer()
             tile.update_tile("File Not Found", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
             return
 
-        # Fetch Video Metadata
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        resolution_str = f"{vid_w}x{vid_h}"
-        actual_duration_sec = (frames / fps) if fps > 0 else 0
-        cap.release()
-
-        # Duration Match Verification (2-second tolerance)
+        expected_sec = None
         if expected_duration_str:
             try:
                 parts = str(expected_duration_str).split(":")
-                if len(parts) == 2:
-                    expected_sec = int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 3:
-                    expected_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                else:
-                    expected_sec = actual_duration_sec
-                
-                if abs(expected_sec - actual_duration_sec) > 2.0:
-                    self.save_to_excel(row, qa_status="Duration mismatch / Wrong video", resolution=resolution_str, elapsed_time=get_elapsed(), total_resizes=0)
-                    tile.stop_timer()
-                    tile.update_tile("Wrong Video / Duration", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
-                    return
-            except Exception:
-                pass # Proceed safely if Excel duration format is unreadable
+                if len(parts) == 2: expected_sec = int(parts[0]) * 60 + int(parts[1])
+                elif len(parts) == 3: expected_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            except Exception: pass
 
-        if fps > 0 and frames > 0:
-            tile.set_duration(actual_duration_sec)
+        video_path = None
+        actual_duration_sec, fps, frames, vid_w, vid_h = 0, 0, 0, 0, 0
+        
+        # Test every matching file until we find the one with the correct duration
+        for path in candidate_paths:
+            cap = cv2.VideoCapture(path)
+            temp_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            temp_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            temp_duration = (temp_frames / temp_fps) if temp_fps > 0 else 0
+            
+            if expected_sec is not None:
+                if abs(expected_sec - temp_duration) <= 2.0:
+                    video_path = path
+                    actual_duration_sec, fps, frames = temp_duration, temp_fps, temp_frames
+                    vid_w, vid_h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    cap.release()
+                    break
+            else:
+                video_path = path
+                actual_duration_sec, fps, frames = temp_duration, temp_fps, temp_frames
+                vid_w, vid_h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                cap.release()
+                break
+                
+            cap.release()
+
+        if not video_path:
+            self.save_to_excel(row, qa_status="Duration mismatch / Wrong video", elapsed_time=get_elapsed(), total_resizes=0)
+            tile.stop_timer()
+            tile.update_tile("Wrong Video / Duration", 1.0, color="#ff4c4c", stage="Halted", resized_status="Error")
+            return
+
+        resolution_str = f"{vid_w}x{vid_h}"
+        if fps > 0 and frames > 0: tile.set_duration(actual_duration_sec)
 
         orig_file_size = get_mb(video_path)
         video_filename = os.path.basename(video_path)
@@ -743,13 +753,15 @@ class VideoResizerApp(ctk.CTk):
         if not s: return ""
         return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
 
-    def find_video_file(self, excel_title):
+    def find_all_video_matches(self, excel_title):
         normalized_title = self.normalize_string(excel_title).replace('mp4', '')
+        matches = []
         for filename in os.listdir(self.video_folder):
             if filename.lower().endswith(('.mp4', '.mov', '.avi')):
                 normalized_filename = self.normalize_string(filename).replace('mp4', '').replace('mov', '').replace('avi', '')
-                if normalized_title == normalized_filename or normalized_title in normalized_filename: return os.path.join(self.video_folder, filename)
-        return None
+                if normalized_title == normalized_filename or normalized_title in normalized_filename: 
+                    matches.append(os.path.join(self.video_folder, filename))
+        return matches
 
     def check_audio(self, video_path):
         try:
