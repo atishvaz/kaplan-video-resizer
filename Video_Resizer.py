@@ -13,6 +13,15 @@ import sys
 import datetime
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 import tkinter.messagebox as messagebox
+import urllib.request
+import json
+import webbrowser
+
+# ==========================================
+# APP VERSION & GITHUB REPO
+# ==========================================
+APP_VERSION = "v1.0.4"
+GITHUB_REPO = "atishvaz/kaplan-video-resizer"
 
 
 def get_bin_path(filename):
@@ -80,6 +89,40 @@ def trigger_auto_installer(app_window):
 # ==========================================
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+def check_for_updates(app_instance):
+    try:
+        url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Video-Resizer-App'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            latest_version = data.get("tag_name")
+            release_url = data.get("html_url")
+
+            if latest_version and latest_version != APP_VERSION:
+                # Trigger UI popup safely on the main thread after 2 seconds
+                app_instance.after(2000, lambda: show_update_popup(app_instance, latest_version, release_url))
+    except Exception as e:
+        print(f"Silent update check failed: {e}")
+
+def show_update_popup(app_instance, latest_version, release_url):
+    popup = ctk.CTkToplevel(app_instance)
+    popup.title("Update Available")
+    popup.geometry("400x160")
+    popup.attributes('-topmost', True)
+    
+    lbl = ctk.CTkLabel(popup, text=f"A new version ({latest_version}) is available!\nYou are currently running {APP_VERSION}.", font=ctk.CTkFont(size=14))
+    lbl.pack(pady=20)
+    
+    btn_frame = ctk.CTkFrame(popup, fg_color="transparent")
+    btn_frame.pack(fill="x", padx=20)
+    
+    def download_update():
+        webbrowser.open(release_url)
+        popup.destroy()
+        
+    ctk.CTkButton(btn_frame, text="Download Update", fg_color="#28a745", hover_color="#218838", command=download_update).pack(side="left", padx=10, expand=True)
+    ctk.CTkButton(btn_frame, text="Skip for Now", fg_color="#555555", hover_color="#333333", command=popup.destroy).pack(side="right", padx=10, expand=True)
 
 class JobTile(ctk.CTkFrame):
     def __init__(self, master, video_name, **kwargs):
@@ -163,9 +206,9 @@ class VideoResizerApp(ctk.CTk):
         # ==========================================
         self.cfg = {
             "shrink": 0.87,
-            "bottom_pct": 0.19,     # Updated to 19%
+            "bottom_pct": 0.25,     # Updated to 19%
             "corner_pct": 0.05,     # Updated to 5%
-            "crf": 26,
+            "crf": 22,
             "preset": "superfast",
             "time_buffer_start": 0.5,
             "max_bridge_gap": 15.0,
@@ -234,6 +277,9 @@ class VideoResizerApp(ctk.CTk):
 
         self.queue_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color="#1e1e1e", corner_radius=10)
         self.queue_frame.grid(row=1, column=0, sticky="nsew")
+
+        # Launch the silent update checker in the background
+        threading.Thread(target=check_for_updates, args=(self,), daemon=True).start()
 
     # ==========================================
     # SETTINGS & LIVE PREVIEW WINDOW
@@ -825,14 +871,13 @@ class VideoResizerApp(ctk.CTk):
                 elif h <= 720:
                     scale = 1.5  # Gives 720p a slight bump for better accuracy
                 else:
-                    scale = 1.0  # Leaves 1080p+ alone
+                    scale = 2.0  # CHANGED: 1080p videos now get a 2x zoom for tiny text
                 
                 if scale > 1.0:
                     gray_zone = cv2.resize(gray_zone, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
                 
-                # Standard blur and threshold
-                blurred_zone = cv2.medianBlur(gray_zone, 3)
-                _, thresh_zone = cv2.threshold(blurred_zone, 150, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                # Standard threshold (Removed the medianBlur that was erasing thin text)
+                _, thresh_zone = cv2.threshold(gray_zone, 150, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
                 
                 # Run OCR
                 ocr_data = pytesseract.image_to_data(thresh_zone, output_type=pytesseract.Output.DICT, config=tess_config)
@@ -850,7 +895,7 @@ class VideoResizerApp(ctk.CTk):
                     word_clean = re.sub(r'[^a-zA-Z0-9]', '', word)
                     
                     # Ignore standard copyright watermark words
-                    ignore_list = ["kaplan", "nclex", "prep", "reserved", "rights", "©", "nursing", "NURSINC", "KAP!", "KAPL", "Kap!", "Kapla", "KAPLA"]
+                    ignore_list = ["kaplan", "nclex", "prep", "reserved", "rights", "©", "nursing", "nursinc", "kap!", "kapl", "kapla", "kap", "ka"]
                     if any(bad_word in word.lower() for bad_word in ignore_list):
                         continue
                         
