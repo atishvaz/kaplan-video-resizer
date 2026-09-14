@@ -16,6 +16,7 @@ import tkinter.messagebox as messagebox
 import urllib.request
 import json
 import webbrowser
+import ssl
 
 # ==========================================
 # APP VERSION & GITHUB REPO
@@ -94,14 +95,19 @@ def check_for_updates(app_instance):
     try:
         url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         req = urllib.request.Request(url, headers={'User-Agent': 'Video-Resizer-App'})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        # Create an unverified context to fix the macOS SSL Certificate error
+        context = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=5, context=context) as response:
             data = json.loads(response.read().decode())
             latest_version = data.get("tag_name")
             release_url = data.get("html_url")
 
-            if latest_version and latest_version != APP_VERSION:
-                # Trigger UI popup safely on the main thread after 2 seconds
-                app_instance.after(2000, lambda: show_update_popup(app_instance, latest_version, release_url))
+            if latest_version:
+                latest_tuple = tuple(map(int, latest_version.replace('v', '').split('.')))
+                app_tuple = tuple(map(int, APP_VERSION.replace('v', '').split('.')))
+
+                if latest_tuple > app_tuple:
+                    app_instance.after(2000, lambda: show_update_popup(app_instance, latest_version, release_url))
     except Exception as e:
         print(f"Silent update check failed: {e}")
 
@@ -206,13 +212,14 @@ class VideoResizerApp(ctk.CTk):
         # ==========================================
         self.cfg = {
             "shrink": 0.87,
-            "bottom_pct": 0.25,     # Updated to 19%
-            "corner_pct": 0.05,     # Updated to 5%
+            "bottom_pct": 0.25,     
+            "corner_pct": 0.05,     
             "crf": 22,
             "preset": "superfast",
             "time_buffer_start": 0.5,
             "max_bridge_gap": 15.0,
-            "tess_conf": 62.0       # Updated to 62%
+            "tess_conf": 62.0,
+            "ignore_words": "kaplan, nclex, prep, reserved, rights, ©, nursing, nursinc, kap!, kapl, kapla, kap, ka"
         }
 
         # --- GRID LAYOUT ---
@@ -331,13 +338,9 @@ class VideoResizerApp(ctk.CTk):
         self.combo_preset.set(self.cfg['preset'])
         self.combo_preset.pack(fill="x", pady=(0, 20))
 
-        ctk.CTkLabel(ctrl_frame, text="Sensitivity", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", pady=(15, 15))
-        
-        self.lbl_conf_val = ctk.CTkLabel(ctrl_frame, text=f"OCR Minimum Confidence: {int(self.cfg.get('tess_conf', 60))}%")
-        self.lbl_conf_val.pack(anchor="w")
-        self.slider_conf = ctk.CTkSlider(ctrl_frame, from_=10, to=100, number_of_steps=90, command=lambda v: self.lbl_conf_val.configure(text=f"OCR Minimum Confidence: {int(v)}%"))
-        self.slider_conf.set(self.cfg.get('tess_conf', 60)) 
-        self.slider_conf.pack(fill="x", pady=(0, 20))
+        # Replaced the sensitivity sliders with a clean Advanced Settings button
+        btn_adv = ctk.CTkButton(ctrl_frame, text="⚙️ Advanced Settings", fg_color="#555555", hover_color="#333333", command=self.open_advanced_settings)
+        btn_adv.pack(fill="x", pady=(15, 20))
 
         btn_save = ctk.CTkButton(ctrl_frame, text="Save Settings", fg_color="#28a745", hover_color="#218838", command=lambda: self.save_settings(settings_win))
         btn_save.pack(fill="x", side="bottom", pady=10)
@@ -419,8 +422,35 @@ class VideoResizerApp(ctk.CTk):
         self.cfg["corner_pct"] = self.slider_corn.get()
         self.cfg["crf"] = int(self.slider_crf.get())
         self.cfg["preset"] = self.combo_preset.get()
-        self.cfg["tess_conf"] = float(self.slider_conf.get())
         win.destroy()
+
+    def open_advanced_settings(self):
+        adv_win = ctk.CTkToplevel(self)
+        adv_win.title("Advanced Settings")
+        adv_win.geometry("400x250")
+        adv_win.attributes('-topmost', True)
+        adv_win.grab_set()
+
+        ctk.CTkLabel(adv_win, text="Sensitivity", font=ctk.CTkFont(size=17, weight="bold")).pack(anchor="w", padx=20, pady=(20, 15))
+        
+        lbl_conf = ctk.CTkLabel(adv_win, text=f"OCR Minimum Confidence: {int(self.cfg.get('tess_conf', 60))}%")
+        lbl_conf.pack(anchor="w", padx=20)
+        
+        slider_conf = ctk.CTkSlider(adv_win, from_=10, to=100, number_of_steps=90, command=lambda v: lbl_conf.configure(text=f"OCR Minimum Confidence: {int(v)}%"))
+        slider_conf.set(self.cfg.get('tess_conf', 60)) 
+        slider_conf.pack(fill="x", padx=20, pady=(0, 20))
+
+        ctk.CTkLabel(adv_win, text="Ignored OCR Words (comma-separated):").pack(anchor="w", padx=20)
+        entry_ignore = ctk.CTkEntry(adv_win)
+        entry_ignore.insert(0, self.cfg.get('ignore_words', ''))
+        entry_ignore.pack(fill="x", padx=20, pady=(0, 20))
+        
+        def save_adv():
+            self.cfg["tess_conf"] = float(slider_conf.get())
+            self.cfg["ignore_words"] = entry_ignore.get()
+            adv_win.destroy()
+            
+        ctk.CTkButton(adv_win, text="Save & Close", fg_color="#28a745", hover_color="#218838", command=save_adv).pack(pady=10)
 
     # ==========================================
     # FILE SELECTION & MAIN LOGIC
@@ -895,7 +925,10 @@ class VideoResizerApp(ctk.CTk):
                     word_clean = re.sub(r'[^a-zA-Z0-9]', '', word)
                     
                     # Ignore standard copyright watermark words
-                    ignore_list = ["kaplan", "nclex", "prep", "reserved", "rights", "©", "nursing", "nursinc", "kap!", "kapl", "kapla", "kap", "ka"]
+                    # Replace the hardcoded list with the dynamic UI list
+                    raw_ignore = self.cfg.get("ignore_words", "")
+                    ignore_list = [w.strip().lower() for w in raw_ignore.split(",") if w.strip()]
+                    
                     if any(bad_word in word.lower() for bad_word in ignore_list):
                         continue
                         
